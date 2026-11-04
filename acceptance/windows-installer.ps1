@@ -33,6 +33,12 @@ try {
   Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
   Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' fDenyTSConnections 0
   New-NetFirewallRule -DisplayName 'BodeeGuard acceptance loopback only' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -LocalAddress 127.0.0.0/8 -RemoteAddress 127.0.0.0/8 | Out-Null
+  # The disposable standard account needs session-connect permission to become
+  # the console user; this grants no Windows administrator or product rights.
+  foreach ($terminal in @(Get-CimInstance -Namespace root/cimv2/terminalservices -ClassName Win32_TSPermissionsSetting)) {
+    $permission=Invoke-CimMethod -InputObject $terminal -MethodName AddAccount -Arguments @{AccountName="$env:COMPUTERNAME\$testUser";PermissionPreSet=[uint32]2}
+    if ($permission.ReturnValue -ne 0) { throw 'Could not grant disposable console-connect permission' }
+  }
   Start-Service TermService
   Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-listener.json')
   Add-Type -AssemblyName System.Windows.Forms
@@ -115,7 +121,7 @@ public static class BgWindow {
   $connectResult=Join-Path $env:RUNNER_TEMP 'bg-connect-console.json'
   @"
 Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class ConnectDesktop{[DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]public static extern bool WTSConnectSessionW(uint logon,uint target,string password,bool wait);}'
-`$ok=[ConnectDesktop]::WTSConnectSessionW($desktopSession,$consoleSession,'',`$true)
+`$ok=[ConnectDesktop]::WTSConnectSessionW($desktopSession,$consoleSession,'$testPassword',`$true)
 @{success=`$ok;error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()} | ConvertTo-Json | Set-Content -LiteralPath '$connectResult'
 "@ | Set-Content -LiteralPath $connectScript
   $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $connectScript + '"')
@@ -126,6 +132,7 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
   if (!(Test-Path $connectResult)) { throw 'Disposable console task did not return a result' }
   $connection=Get-Content $connectResult -Raw | ConvertFrom-Json
   Unregister-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole' -Confirm:$false
+  Remove-Item -LiteralPath $connectScript
   if (!$connection.success) { throw ('Could not transfer disposable desktop as SYSTEM: Windows error ' + $connection.error) }
   & cmdkey /delete:TERMSRV/127.0.0.2 | Out-Null
   if ([BgWindow]::WTSGetActiveConsoleSessionId() -ne $desktopSession) { throw 'Standard user is not active console' }
