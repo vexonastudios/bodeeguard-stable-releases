@@ -57,18 +57,11 @@ public static class BgWindow {
  public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h)=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
 "@
-  $clsid = (Get-ItemProperty 'Registry::HKEY_CLASSES_ROOT\MsRDP.MsRDP.9\CLSID').'(default)'
-  $form = New-Object Windows.Forms.Form
-  $form.Width=1024; $form.Height=768
-  $rdp = New-Object BgRdpHost($clsid)
-  $rdp.Dock='Fill'; $form.Controls.Add($rdp); $form.Show()
-  $client=$rdp.Client
-  $client.Server='127.0.0.2'; $client.Domain=$env:COMPUTERNAME; $client.UserName=$testUser
-  $client.DesktopWidth=1280; $client.DesktopHeight=800
-  $client.AdvancedSettings9.AuthenticationLevel=0
-  $client.AdvancedSettings9.EnableCredSspSupport=$true
-  $client.AdvancedSettings9.ClearTextPassword=$testPassword
-  $client.Connect()
+  # Use Windows' supported RDP client, with a disposable loopback credential.
+  & cmdkey /generic:TERMSRV/127.0.0.2 "/user:$env:COMPUTERNAME\$testUser" "/pass:$testPassword" | Out-Null
+  $rdpFile=Join-Path $env:RUNNER_TEMP 'bg-standard-desktop.rdp'
+  @("full address:s:127.0.0.2","username:s:$env:COMPUTERNAME\$testUser",'prompt for credentials:i:0','authentication level:i:0','enablecredsspsupport:i:1','redirectclipboard:i:0','administrative session:i:0','desktopwidth:i:1280','desktopheight:i:800') | Set-Content $rdpFile
+  $rdpProcess=Start-Process -FilePath "$env:SystemRoot\System32\mstsc.exe" -ArgumentList $rdpFile -WindowStyle Hidden -PassThru
   $desktopSession=$null
   $deadline=(Get-Date).AddSeconds(90)
   do {
@@ -79,22 +72,20 @@ public static class BgWindow {
     }
   } until ($null -ne $desktopSession -or (Get-Date) -gt $deadline)
   if ($null -eq $desktopSession) {
-    @{connected=$client.Connected;extendedDisconnectReason=$client.ExtendedDisconnectReason} | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-client.json')
+    Get-Process mstsc -ErrorAction SilentlyContinue | Select-Object Id,MainWindowTitle | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-client.json')
+    Add-Type -AssemblyName UIAutomationClient
+    [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,(New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$rdpProcess.Id))) | ForEach-Object { $_.Current.Name } | Select-Object -First 40 | Set-Content (Join-Path $out 'rdp-dialog.txt')
     & query user 2>&1 | Out-File (Join-Path $out 'desktop-sessions.txt')
     foreach ($log in @('Microsoft-Windows-TerminalServices-LocalSessionManager/Operational','Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational','Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational')) {
       Get-WinEvent -FilterHashtable @{LogName=$log;StartTime=(Get-Date).AddMinutes(-3)} -MaxEvents 12 -ErrorAction SilentlyContinue | Select-Object Id,Message | ConvertTo-Json -Depth 4 | Out-File (Join-Path $out (($log -replace '[^a-zA-Z0-9]','-') + '.json'))
     }
     & secedit /export /cfg (Join-Path $env:RUNNER_TEMP 'rights.inf') /areas USER_RIGHTS | Out-Null
     Select-String -Path (Join-Path $env:RUNNER_TEMP 'rights.inf') -Pattern 'RemoteInteractiveLogonRight' | ForEach-Object Line | Set-Content (Join-Path $out 'remote-logon-rights.txt')
-    Add-Type -AssemblyName System.Drawing
-    $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
-    $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)))
-    $bitmap.Save((Join-Path $out 'desktop-preparation.png'));$bitmap.Dispose()
     throw 'Could not establish standard-user desktop in disposable VM'
   }
   & "$env:SystemRoot\System32\tscon.exe" $desktopSession /dest:console "/password:$testPassword"
   if ($LASTEXITCODE -ne 0) { throw 'Could not transfer disposable desktop to console' }
-  $form.Close()
+  & cmdkey /delete:TERMSRV/127.0.0.2 | Out-Null
   if ([BgWindow]::WTSGetActiveConsoleSessionId() -ne $desktopSession) { throw 'Standard user is not active console' }
   Write-Host 'Standard-user console ready; beginning actual setup wizard.'
 
