@@ -56,6 +56,7 @@ public static class BgWindow {
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
+ [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool WTSConnectSessionW(uint logon,uint target,string password,bool wait);
  public static string Text(IntPtr h) {var s=new System.Text.StringBuilder(512);GetWindowText(h,s,512);return s.ToString();}
  public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h)=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
@@ -106,8 +107,9 @@ public static class BgWindow {
     Select-String -Path (Join-Path $env:RUNNER_TEMP 'rights.inf') -Pattern 'RemoteInteractiveLogonRight' | ForEach-Object Line | Set-Content (Join-Path $out 'remote-logon-rights.txt')
     throw 'Could not establish standard-user desktop in disposable VM'
   }
-  & "$env:SystemRoot\System32\tscon.exe" $desktopSession /dest:console "/password:$testPassword"
-  if ($LASTEXITCODE -ne 0) { throw 'Could not transfer disposable desktop to console' }
+  $consoleSession=[BgWindow]::WTSGetActiveConsoleSessionId()
+  Write-Host "Connecting standard-user session $desktopSession to console $consoleSession."
+  if (![BgWindow]::WTSConnectSessionW([uint32]$desktopSession,$consoleSession,$testPassword,$true)) { throw ('Could not transfer disposable desktop: Windows error ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
   & cmdkey /delete:TERMSRV/127.0.0.2 | Out-Null
   if ([BgWindow]::WTSGetActiveConsoleSessionId() -ne $desktopSession) { throw 'Standard user is not active console' }
   Write-Host 'Standard-user console ready; beginning actual setup wizard.'
