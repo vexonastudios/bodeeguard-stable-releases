@@ -109,7 +109,24 @@ public static class BgWindow {
   }
   $consoleSession=[BgWindow]::WTSGetActiveConsoleSessionId()
   Write-Host "Connecting standard-user session $desktopSession to console $consoleSession."
-  if (![BgWindow]::WTSConnectSessionW([uint32]$desktopSession,$consoleSession,$testPassword,$true)) { throw ('Could not transfer disposable desktop: Windows error ' + [Runtime.InteropServices.Marshal]::GetLastWin32Error()) }
+  # Connecting another user's session requires SYSTEM on hosted runners. This
+  # one-shot VM-only task changes the console session, never product permissions.
+  $connectScript=Join-Path $env:RUNNER_TEMP 'bg-connect-console.ps1'
+  $connectResult=Join-Path $env:RUNNER_TEMP 'bg-connect-console.json'
+  @"
+Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class ConnectDesktop{[DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]public static extern bool WTSConnectSessionW(uint logon,uint target,string password,bool wait);}'
+`$ok=[ConnectDesktop]::WTSConnectSessionW($desktopSession,$consoleSession,'',`$true)
+@{success=`$ok;error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()} | ConvertTo-Json | Set-Content -LiteralPath '$connectResult'
+"@ | Set-Content -LiteralPath $connectScript
+  $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $connectScript + '"')
+  Register-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole' -Action $action -User SYSTEM -RunLevel Highest -Force | Out-Null
+  Start-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole'
+  $connectDeadline=(Get-Date).AddSeconds(30)
+  while (!(Test-Path $connectResult) -and (Get-Date) -lt $connectDeadline) { Start-Sleep -Milliseconds 500 }
+  if (!(Test-Path $connectResult)) { throw 'Disposable console task did not return a result' }
+  $connection=Get-Content $connectResult -Raw | ConvertFrom-Json
+  Unregister-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole' -Confirm:$false
+  if (!$connection.success) { throw ('Could not transfer disposable desktop as SYSTEM: Windows error ' + $connection.error) }
   & cmdkey /delete:TERMSRV/127.0.0.2 | Out-Null
   if ([BgWindow]::WTSGetActiveConsoleSessionId() -ne $desktopSession) { throw 'Standard user is not active console' }
   Write-Host 'Standard-user console ready; beginning actual setup wizard.'
@@ -159,7 +176,8 @@ public static class BgWindow {
   # This synthetic marker is not a child file; it verifies repair preserves
   # the standard user's profile. Never pair this disposable user to a family.
   $profile=Join-Path 'C:\Users' $testUser
-  $marker=Join-Path $profile 'Documents\BodeeGuard-acceptance.txt'
+  $profileName=if ($env:BG_CHANNEL -eq 'test') { 'BodeeGuard-Cloud-Child-Validation' } else { 'BodeeGuard-Cloud-Child' }
+  $marker=Join-Path $profile ("AppData\Roaming\" + $profileName + '\Acceptance\synthetic-draft.txt')
   New-Item -ItemType Directory -Path (Split-Path $marker) -Force | Out-Null
   Set-Content -LiteralPath $marker -Value 'synthetic acceptance work; preserve during repair'
   $markerHash=(Get-FileHash $marker).Hash
