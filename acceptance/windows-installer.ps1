@@ -62,10 +62,20 @@ public static class BgWindow {
   $rdpFile=Join-Path $env:RUNNER_TEMP 'bg-standard-desktop.rdp'
   @("full address:s:127.0.0.2","username:s:$env:COMPUTERNAME\$testUser",'prompt for credentials:i:0','authentication level:i:0','enablecredsspsupport:i:1','redirectclipboard:i:0','administrative session:i:0','desktopwidth:i:1280','desktopheight:i:800') | Set-Content $rdpFile
   $rdpProcess=Start-Process -FilePath "$env:SystemRoot\System32\mstsc.exe" -ArgumentList $rdpFile -WindowStyle Hidden -PassThru
+  Add-Type -AssemblyName UIAutomationClient
+  Add-Type -AssemblyName UIAutomationTypes
   $desktopSession=$null
   $deadline=(Get-Date).AddSeconds(90)
   do {
     [Windows.Forms.Application]::DoEvents(); Start-Sleep -Milliseconds 500
+    $rdpControls=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,(New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$rdpProcess.Id)))
+    $rdpConsent=@($rdpControls | Where-Object { $_.Current.Name -eq 'I understand and allow RDP files to open on this device for my account' })
+    if ($rdpConsent.Count -eq 1) {
+      $toggle=$rdpConsent[0].GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
+      if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
+      $okay=@($rdpControls | Where-Object { $_.Current.Name -eq 'OK' -and $_.Current.IsEnabled })
+      if ($okay.Count -eq 1) { $okay[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); Write-Host 'Accepted first-use RDP prompt inside disposable VM.' }
+    }
     foreach ($explorer in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")) {
       $owner=Invoke-CimMethod -InputObject $explorer -MethodName GetOwner
       if ($owner.User -eq $testUser) { $desktopSession=[int]$explorer.SessionId; break }
