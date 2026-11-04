@@ -53,7 +53,7 @@ public static class BgWindow {
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
  public static string Text(IntPtr h) {var s=new System.Text.StringBuilder(512);GetWindowText(h,s,512);return s.ToString();}
- public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h)=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
+ public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h).Trim()=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
 "@
   # Use Windows' supported RDP client, with a disposable loopback credential.
@@ -118,7 +118,8 @@ public static class BgWindow {
       $activePath=Join-Path $state 'active.json'
       if (!$opened -and (Test-Path $activePath)) {
         try { $pending=Get-Content $activePath -Raw | ConvertFrom-Json } catch { $pending=$null }
-        if ($pending -and $pending.phase -eq 'health-pending' -and (Get-Service BodeeGuardCloudGuardian -ErrorAction SilentlyContinue).Status -eq 'Running') {
+        $pendingService=Get-Service BodeeGuardCloudGuardian -ErrorAction SilentlyContinue
+        if ($pending -and $pending.phase -eq 'health-pending' -and $pendingService -and $pendingService.Status -eq 'Running') {
           Start-ScheduledTask -TaskName 'BodeeGuardAcceptanceOpenApp'
           $opened=$true
           Write-Host "$stage opened installed app in standard-user desktop."
