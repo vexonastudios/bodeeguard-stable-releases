@@ -79,6 +79,16 @@ public static class BgWindow {
       $okay=@($rdpControls | Where-Object { $_.Current.Name -eq 'OK' -and $_.Current.IsEnabled })
       if ($okay.Count -eq 1) { $point=$okay[0].GetClickablePoint(); [BgWindow]::Click([int]$point.X,[int]$point.Y); Write-Host 'Accepted first-use RDP prompt inside disposable VM.' }
     }
+    # Trust only this disposable VM's self-signed RDP certificate, reached on
+    # 127.0.0.2. No trust store or product certificate policy is changed.
+    $rdpIds=@(Get-Process mstsc -ErrorAction SilentlyContinue | ForEach-Object Id)
+    $desktopControls=[Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition)
+    $certificateControls=@($desktopControls | Where-Object { $_.Current.ProcessId -in $rdpIds })
+    $names=@($certificateControls | ForEach-Object { $_.Current.Name })
+    if ($names -contains 'Do you want to connect despite these certificate errors?' -and $names -contains $env:COMPUTERNAME) {
+      $yes=@($certificateControls | Where-Object { $_.Current.Name -eq 'Yes' -and $_.Current.IsEnabled })
+      if ($yes.Count -eq 1) { $point=$yes[0].GetClickablePoint();[BgWindow]::Click([int]$point.X,[int]$point.Y);Write-Host 'Confirmed this disposable VM certificate on loopback.' }
+    }
     foreach ($explorer in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")) {
       $owner=Invoke-CimMethod -InputObject $explorer -MethodName GetOwner
       if ($owner.User -eq $testUser) { $desktopSession=[int]$explorer.SessionId; break }
