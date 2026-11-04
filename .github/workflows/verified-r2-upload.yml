@@ -1,0 +1,60 @@
+name: Verified R2 installer upload
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact public installer version
+        required: true
+        type: string
+      sha256:
+        description: Expected installer SHA-256 from the build receipt
+        required: true
+        type: string
+      size:
+        description: Expected byte length from the build receipt
+        required: true
+        type: string
+permissions:
+  contents: write
+jobs:
+  upload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Verify public R2 bytes and upload to the existing draft
+        env:
+          VERSION: ${{ inputs.version }}
+          EXPECTED_SHA: ${{ inputs.sha256 }}
+          EXPECTED_SIZE: ${{ inputs.size }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os, re, subprocess, urllib.request
+          version, sha, raw_size = (os.environ[k] for k in ('VERSION', 'EXPECTED_SHA', 'EXPECTED_SIZE'))
+          assert re.fullmatch(r'[0-9]{1,5}\.[0-9]{1,5}\.[0-9]{1,5}', version)
+          assert re.fullmatch(r'[0-9a-f]{64}', sha)
+          assert re.fullmatch(r'[0-9]{4,9}', raw_size)
+          size = int(raw_size)
+          assert 4096 <= size <= 512 * 1024 * 1024
+          assert os.environ['GH_REPO'] == 'vexonastudios/bodeeguard-stable-releases'
+          tag = 'cloud-child-v' + version
+          release = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'databaseId,isDraft']))
+          assert release['isDraft'] is True, 'Only existing draft releases may be uploaded'
+          filename = 'BodeeGuard-Cloud-Child-Setup-' + version + '.exe'
+          url = 'https://bodeeguard-cloud-assets.james-7f8.workers.dev/v1/updates/stable/' + filename
+          digest, received = hashlib.sha256(), 0
+          with urllib.request.urlopen(url, timeout=60) as response, open(filename, 'xb') as output:
+              assert response.status == 200
+              while chunk := response.read(1024 * 1024):
+                  received += len(chunk)
+                  assert received <= size
+                  digest.update(chunk)
+                  output.write(chunk)
+          assert received == size and digest.hexdigest() == sha, 'Installer does not match its build receipt'
+          subprocess.run(['gh', 'release', 'upload', tag, filename], check=True)
+          assets = json.loads(subprocess.check_output(['gh', 'api', 'repos/' + os.environ['GH_REPO'] + '/releases/' + str(release['databaseId']) + '/assets']))
+          asset, = [a for a in assets if a['name'] == filename]
+          assert asset['size'] == size and asset['digest'] == 'sha256:' + sha and asset['state'] == 'uploaded'
+          print(json.dumps({'version': version, 'size': size, 'sha256': sha, 'draftUploadVerified': True}))
+          PY
