@@ -8,7 +8,7 @@ if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hoste
 if ($env:BG_VERSION -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}$' -or $env:BG_EXPECTED_SHA -notmatch '^[a-f0-9]{64}$' -or $env:BG_EXPECTED_SIZE -notmatch '^\d{4,9}$') { throw 'Invalid artifact identity' }
 $out = Join-Path $env:GITHUB_WORKSPACE 'acceptance-output'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
-$receipt = [ordered]@{ schemaVersion=1; purpose='bodeeguard-real-installer-smoke'; channel=$env:BG_CHANNEL; version=$env:BG_VERSION; sha256=$env:BG_EXPECTED_SHA; size=[long]$env:BG_EXPECTED_SIZE; runUrl="https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; runnerImage=$env:ImageVersion; checkedAt=(Get-Date).ToUniversalTime().ToString('o'); status='failed'; checks=@(); limitations=@('Windows Server VM; Windows 10/11 physical hardware and reboot not covered','No household pairing, lesson or automatic-update claim') }
+$receipt = [ordered]@{ schemaVersion=1; purpose='bodeeguard-real-installer-smoke'; channel=$env:BG_CHANNEL; version=$env:BG_VERSION; sha256=$env:BG_EXPECTED_SHA; size=[long]$env:BG_EXPECTED_SIZE; runUrl="https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; runnerImage=$env:ImageVersion; checkedAt=(Get-Date).ToUniversalTime().ToString('o'); status='failed'; checks=@(); limitations=@('Windows Server VM; Windows 10/11 physical hardware and reboot not covered','No household pairing, lesson or automatic-update claim','Hosted console belongs to the runner; app is opened in the standard user desktop, not by automatic console launch') }
 $root = Join-Path $env:ProgramFiles 'BodeeGuard Cloud Child'
 $state = $root + '.InstallState'
 try {
@@ -19,9 +19,9 @@ try {
   if ((Get-Item $file).Length -ne $receipt.size -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $receipt.sha256) { throw 'Downloaded installer differs from exact build receipt' }
   Write-Host 'Verified exact public installer bytes.'
 
-  # GitHub uses an elevated administrative desktop. Create a disposable standard
-  # desktop using loopback RDP, then transfer it to the console for the REAL
-  # service's WTS launch. Do not replace, patch or mock product code or IPC.
+  # Use a separate standard-user desktop. The hosted console belongs to the
+  # administrative runner; opening the app here models its Start-menu launch.
+  # Do not patch product files, authentication, service or installation checks.
   $testUser = 'bgaccept'
   $testPassword = 'Bg!' + [Guid]::NewGuid().ToString('N') + 'a7'
   Write-Host "::add-mask::$testPassword"
@@ -33,12 +33,6 @@ try {
   Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
   Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' fDenyTSConnections 0
   New-NetFirewallRule -DisplayName 'BodeeGuard acceptance loopback only' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -LocalAddress 127.0.0.0/8 -RemoteAddress 127.0.0.0/8 | Out-Null
-  # The disposable standard account needs session-connect permission to become
-  # the console user; this grants no Windows administrator or product rights.
-  foreach ($terminal in @(Get-CimInstance -Namespace root/cimv2/terminalservices -ClassName Win32_TSPermissionsSetting)) {
-    $permission=Invoke-CimMethod -InputObject $terminal -MethodName AddAccount -Arguments @{AccountName="$env:COMPUTERNAME\$testUser";PermissionPreSet=[uint32]2}
-    if ($permission.ReturnValue -ne 0) { throw 'Could not grant disposable console-connect permission' }
-  }
   Start-Service TermService
   Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-listener.json')
   Add-Type -AssemblyName System.Windows.Forms
@@ -46,9 +40,6 @@ try {
 using System;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
-public sealed class BgRdpHost : AxHost {
- public BgRdpHost(string clsid) : base(clsid) {} public object Client { get { return GetOcx(); } }
-}
 public static class BgWindow {
  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
  [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,IntPtr extra);
@@ -61,16 +52,12 @@ public static class BgWindow {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
- [DllImport("kernel32.dll")] public static extern uint WTSGetActiveConsoleSessionId();
- [DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)] public static extern bool WTSConnectSessionW(uint logon,uint target,string password,bool wait);
  public static string Text(IntPtr h) {var s=new System.Text.StringBuilder(512);GetWindowText(h,s,512);return s.ToString();}
  public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h)=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
 "@
   # Use Windows' supported RDP client, with a disposable loopback credential.
   & cmdkey /generic:TERMSRV/127.0.0.2 "/user:$env:COMPUTERNAME\$testUser" "/pass:$testPassword" | Out-Null
-  $rdpFile=Join-Path $env:RUNNER_TEMP 'bg-standard-desktop.rdp'
-  @("full address:s:127.0.0.2","username:s:$env:COMPUTERNAME\$testUser",'prompt for credentials:i:0','authentication level:i:0','enablecredsspsupport:i:1','redirectclipboard:i:0','administrative session:i:0','desktopwidth:i:1280','desktopheight:i:800') | Set-Content $rdpFile
   $rdpProcess=Start-Process -FilePath "$env:SystemRoot\System32\mstsc.exe" -ArgumentList @('/v:127.0.0.2','/w:1280','/h:800') -WindowStyle Hidden -PassThru
   Add-Type -AssemblyName UIAutomationClient
   Add-Type -AssemblyName UIAutomationTypes
@@ -113,37 +100,30 @@ public static class BgWindow {
     Select-String -Path (Join-Path $env:RUNNER_TEMP 'rights.inf') -Pattern 'RemoteInteractiveLogonRight' | ForEach-Object Line | Set-Content (Join-Path $out 'remote-logon-rights.txt')
     throw 'Could not establish standard-user desktop in disposable VM'
   }
-  $consoleSession=[BgWindow]::WTSGetActiveConsoleSessionId()
-  Write-Host "Connecting standard-user session $desktopSession to console $consoleSession."
-  # Connecting another user's session requires SYSTEM on hosted runners. This
-  # one-shot VM-only task changes the console session, never product permissions.
-  $connectScript=Join-Path $env:RUNNER_TEMP 'bg-connect-console.ps1'
-  $connectResult=Join-Path $env:RUNNER_TEMP 'bg-connect-console.json'
-  @"
-Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;public static class ConnectDesktop{[DllImport("wtsapi32.dll",CharSet=CharSet.Unicode,SetLastError=true)]public static extern bool WTSConnectSessionW(uint logon,uint target,string password,bool wait);}'
-`$ok=[ConnectDesktop]::WTSConnectSessionW($desktopSession,$consoleSession,'$testPassword',`$true)
-@{success=`$ok;error=[Runtime.InteropServices.Marshal]::GetLastWin32Error()} | ConvertTo-Json | Set-Content -LiteralPath '$connectResult'
-"@ | Set-Content -LiteralPath $connectScript
-  $action=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument ('-NoProfile -ExecutionPolicy Bypass -File "' + $connectScript + '"')
-  Register-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole' -Action $action -User SYSTEM -RunLevel Highest -Force | Out-Null
-  Start-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole'
-  $connectDeadline=(Get-Date).AddSeconds(30)
-  while (!(Test-Path $connectResult) -and (Get-Date) -lt $connectDeadline) { Start-Sleep -Milliseconds 500 }
-  if (!(Test-Path $connectResult)) { throw 'Disposable console task did not return a result' }
-  $connection=Get-Content $connectResult -Raw | ConvertFrom-Json
-  Unregister-ScheduledTask -TaskName 'BodeeGuardAcceptanceConsole' -Confirm:$false
-  Remove-Item -LiteralPath $connectScript
-  if (!$connection.success) { throw ('Could not transfer disposable desktop as SYSTEM: Windows error ' + $connection.error) }
   & cmdkey /delete:TERMSRV/127.0.0.2 | Out-Null
-  if ([BgWindow]::WTSGetActiveConsoleSessionId() -ne $desktopSession) { throw 'Standard user is not active console' }
-  Write-Host 'Standard-user console ready; beginning actual setup wizard.'
+  $launchAction=New-ScheduledTaskAction -Execute (Join-Path $root 'BodeeGuard Cloud Child.exe')
+  $launchPrincipal=New-ScheduledTaskPrincipal -UserId "$env:COMPUTERNAME\$testUser" -LogonType Interactive -RunLevel Limited
+  Register-ScheduledTask -TaskName 'BodeeGuardAcceptanceOpenApp' -Action $launchAction -Principal $launchPrincipal -Force | Out-Null
+  Write-Host 'Standard-user desktop ready; beginning actual setup wizard.'
 
   function Invoke-Installer([string]$stage) {
     # GUI installer; /S is reserved for authentic signed automatic-update tickets.
     $proc=Start-Process -FilePath $file -PassThru -WindowStyle Hidden
     $watch=[Diagnostics.Stopwatch]::StartNew()
     $clicked=@()
+    $opened=$false
     while (!$proc.HasExited -and $watch.Elapsed.TotalSeconds -lt 240) {
+      # Open the real installed app as this standard user, as from Start.
+      # Wait until the installer has activated its actual service and health phase.
+      $activePath=Join-Path $state 'active.json'
+      if (!$opened -and (Test-Path $activePath)) {
+        try { $pending=Get-Content $activePath -Raw | ConvertFrom-Json } catch { $pending=$null }
+        if ($pending -and $pending.phase -eq 'health-pending' -and (Get-Service BodeeGuardCloudGuardian -ErrorAction SilentlyContinue).Status -eq 'Running') {
+          Start-ScheduledTask -TaskName 'BodeeGuardAcceptanceOpenApp'
+          $opened=$true
+          Write-Host "$stage opened installed app in standard-user desktop."
+        }
+      }
       $window=[BgWindow]::SetupWindow($proc.Id)
       if ($window -ne [IntPtr]::Zero) {
         $next=[BgWindow]::GetDlgItem($window,1)
@@ -175,7 +155,7 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
     if ($app.Path -ne (Join-Path $root 'BodeeGuard Cloud Child.exe') -or $app.SessionId -ne $desktopSession) { throw "$stage wrong app/session" }
     $installedVersion=(Get-Item $app.Path).VersionInfo.ProductVersion
     if ($installedVersion -ne $env:BG_VERSION) { throw "$stage wrong installed version: $installedVersion" }
-    $entry=@{name=$stage;status='passed';installerExitCode=$proc.ExitCode;service='Running';applicationHealth='confirmed';standardUser=$true;installedVersion=$installedVersion;buttons=$clicked;transactionId=$journal.id}
+    $entry=@{name=$stage;status='passed';installerExitCode=$proc.ExitCode;service='Running';applicationHealth='confirmed';standardUser=$true;launchMode='standard-user-start-menu';installedVersion=$installedVersion;buttons=$clicked;transactionId=$journal.id}
     $receipt.checks+=$entry
     Write-Host "$stage installer committed and real app confirmed UI/storage/recovery health."
   }
@@ -200,6 +180,7 @@ Add-Type -TypeDefinition 'using System;using System.Runtime.InteropServices;publ
   throw
 } finally {
   # Preserve only machine-install diagnostics. No accounts, secrets or pairing codes.
+  Get-Process | Where-Object { $_.ProcessName -like 'BodeeGuard*' } | Select-Object Id,ProcessName,SessionId,MainWindowTitle | ConvertTo-Json | Set-Content (Join-Path $out 'test-processes.json')
   if (Test-Path $state) {
     foreach ($name in @('startup.json','active.json','diagnostic-reference.json')) {
       $source=Join-Path $state $name
