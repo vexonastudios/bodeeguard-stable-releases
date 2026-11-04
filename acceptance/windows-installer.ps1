@@ -154,9 +154,10 @@ public static class BgWindow {
     if ($health.challenge -ne $journal.healthId -or $health.manifestHash -ne $journal.candidateHash) { throw "$stage mismatched app health" }
     $app=Get-Process -Id $health.processId
     if ($app.Path -ne (Join-Path $root 'BodeeGuard Cloud Child.exe') -or $app.SessionId -ne $desktopSession) { throw "$stage wrong app/session" }
-    $installedVersion=(Get-Item $app.Path).VersionInfo.ProductVersion
-    if ($installedVersion -ne $env:BG_VERSION) { throw "$stage wrong installed version: $installedVersion" }
-    $entry=@{name=$stage;status='passed';installerExitCode=$proc.ExitCode;service='Running';applicationHealth='confirmed';standardUser=$true;launchMode='standard-user-start-menu';installedVersion=$installedVersion;buttons=$clicked;transactionId=$journal.id}
+    $windowsProductVersion=(Get-Item $app.Path).VersionInfo.ProductVersion
+    if ($windowsProductVersion -ne $env:BG_VERSION -and $windowsProductVersion -ne ($env:BG_VERSION + '.0')) { throw "$stage wrong installed version: $windowsProductVersion" }
+    $installedVersion=$env:BG_VERSION
+    $entry=@{name=$stage;status='passed';installerExitCode=$proc.ExitCode;service='Running';applicationHealth='confirmed';standardUser=$true;launchMode='standard-user-start-menu';installedVersion=$installedVersion;windowsProductVersion=$windowsProductVersion;buttons=$clicked;transactionId=$journal.id}
     $receipt.checks+=$entry
     Write-Host "$stage installer committed and real app confirmed UI/storage/recovery health."
   }
