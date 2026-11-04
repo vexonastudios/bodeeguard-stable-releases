@@ -1,17 +1,20 @@
 # This script intentionally installs software. NEVER run it on a family/development PC.
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+if (!$env:BG_CHANNEL) { $env:BG_CHANNEL='stable' }
+if ($env:BG_CHANNEL -notin @('stable','test')) { throw 'Invalid release channel' }
 Set-StrictMode -Version Latest
 if ($env:GITHUB_ACTIONS -ne 'true' -or $env:RUNNER_ENVIRONMENT -ne 'github-hosted' -or $env:GITHUB_REPOSITORY -ne 'vexonastudios/bodeeguard-stable-releases') { throw 'Disposable GitHub-hosted release VM required' }
 if ($env:BG_VERSION -notmatch '^\d{1,5}\.\d{1,5}\.\d{1,5}$' -or $env:BG_EXPECTED_SHA -notmatch '^[a-f0-9]{64}$' -or $env:BG_EXPECTED_SIZE -notmatch '^\d{4,9}$') { throw 'Invalid artifact identity' }
 $out = Join-Path $env:GITHUB_WORKSPACE 'acceptance-output'
 New-Item -ItemType Directory -Path $out -Force | Out-Null
-$receipt = [ordered]@{ schemaVersion=1; purpose='bodeeguard-real-installer-smoke'; version=$env:BG_VERSION; sha256=$env:BG_EXPECTED_SHA; size=[long]$env:BG_EXPECTED_SIZE; runUrl="https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; runnerImage=$env:ImageVersion; checkedAt=(Get-Date).ToUniversalTime().ToString('o'); status='failed'; checks=@(); limitations=@('Windows Server VM; Windows 10/11 physical hardware and reboot not covered','No household pairing, lesson or automatic-update claim') }
+$receipt = [ordered]@{ schemaVersion=1; purpose='bodeeguard-real-installer-smoke'; channel=$env:BG_CHANNEL; version=$env:BG_VERSION; sha256=$env:BG_EXPECTED_SHA; size=[long]$env:BG_EXPECTED_SIZE; runUrl="https://github.com/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"; runnerImage=$env:ImageVersion; checkedAt=(Get-Date).ToUniversalTime().ToString('o'); status='failed'; checks=@(); limitations=@('Windows Server VM; Windows 10/11 physical hardware and reboot not covered','No household pairing, lesson or automatic-update claim') }
 $root = Join-Path $env:ProgramFiles 'BodeeGuard Cloud Child'
 $state = $root + '.InstallState'
 try {
   if ((Test-Path $root) -or (Get-Service BodeeGuardCloudGuardian -ErrorAction SilentlyContinue)) { throw 'Fresh VM already contains BodeeGuard' }
   $file = Join-Path $env:RUNNER_TEMP ("BodeeGuard-Cloud-Child-Setup-" + $env:BG_VERSION + '.exe')
-  $url = 'https://bodeeguard-cloud-assets.james-7f8.workers.dev/v1/updates/stable/' + [IO.Path]::GetFileName($file)
+  $url = ('https://bodeeguard-cloud-assets.james-7f8.workers.dev/v1/updates/' + $env:BG_CHANNEL + '/') + [IO.Path]::GetFileName($file)
   Invoke-WebRequest -UseBasicParsing -Uri $url -UserAgent 'BodeeGuard-ReleaseVerifier/1.0' -OutFile $file -TimeoutSec 180
   if ((Get-Item $file).Length -ne $receipt.size -or (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() -ne $receipt.sha256) { throw 'Downloaded installer differs from exact build receipt' }
   Write-Host 'Verified exact public installer bytes.'
@@ -52,7 +55,7 @@ public static class BgWindow {
  public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h)=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
 "@
-  $clsid = (Get-ItemProperty 'Registry::HKEY_CLASSES_ROOT\MsRdpClient9NotSafeForScripting\CLSID').'(default)'
+  $clsid = (Get-ItemProperty 'Registry::HKEY_CLASSES_ROOT\MsRDP.MsRDP.9\CLSID').'(default)'
   $form = New-Object Windows.Forms.Form
   $form.Width=1024; $form.Height=768
   $rdp = New-Object BgRdpHost($clsid)
