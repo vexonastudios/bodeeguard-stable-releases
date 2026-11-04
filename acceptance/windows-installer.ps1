@@ -44,6 +44,9 @@ public sealed class BgRdpHost : AxHost {
  public BgRdpHost(string clsid) : base(clsid) {} public object Client { get { return GetOcx(); } }
 }
 public static class BgWindow {
+ [DllImport("user32.dll")] public static extern bool SetCursorPos(int x,int y);
+ [DllImport("user32.dll")] public static extern void mouse_event(uint flags,uint x,uint y,uint data,IntPtr extra);
+ public static void Click(int x,int y){SetCursorPos(x,y);mouse_event(2,0,0,0,IntPtr.Zero);mouse_event(4,0,0,0,IntPtr.Zero);}
  public delegate bool EnumProc(IntPtr h, IntPtr l);
  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb,IntPtr l);
  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h,out uint p);
@@ -74,7 +77,7 @@ public static class BgWindow {
       $toggle=$rdpConsent[0].GetCurrentPattern([Windows.Automation.TogglePattern]::Pattern)
       if ($toggle.Current.ToggleState -eq [Windows.Automation.ToggleState]::Off) { $toggle.Toggle() }
       $okay=@($rdpControls | Where-Object { $_.Current.Name -eq 'OK' -and $_.Current.IsEnabled })
-      if ($okay.Count -eq 1) { $okay[0].GetCurrentPattern([Windows.Automation.InvokePattern]::Pattern).Invoke(); Write-Host 'Accepted first-use RDP prompt inside disposable VM.' }
+      if ($okay.Count -eq 1) { $point=$okay[0].GetClickablePoint(); [BgWindow]::Click([int]$point.X,[int]$point.Y); Write-Host 'Accepted first-use RDP prompt inside disposable VM.' }
     }
     foreach ($explorer in @(Get-CimInstance Win32_Process -Filter "Name='explorer.exe'")) {
       $owner=Invoke-CimMethod -InputObject $explorer -MethodName GetOwner
@@ -112,7 +115,7 @@ public static class BgWindow {
           $text=[BgWindow]::Text($next)
           if ($text -match '(?i)next|install|finish|close') {
             $clicked+=$text
-            [BgWindow]::PostMessage($next,0xF5,[IntPtr]::Zero,[IntPtr]::Zero) | Out-Null
+            [BgWindow]::PostMessage($window,0x111,[IntPtr]1,$next) | Out-Null
           }
         }
       }
