@@ -64,7 +64,7 @@ public static class BgWindow {
   & cmdkey /generic:TERMSRV/127.0.0.2 "/user:$env:COMPUTERNAME\$testUser" "/pass:$testPassword" | Out-Null
   $rdpFile=Join-Path $env:RUNNER_TEMP 'bg-standard-desktop.rdp'
   @("full address:s:127.0.0.2","username:s:$env:COMPUTERNAME\$testUser",'prompt for credentials:i:0','authentication level:i:0','enablecredsspsupport:i:1','redirectclipboard:i:0','administrative session:i:0','desktopwidth:i:1280','desktopheight:i:800') | Set-Content $rdpFile
-  $rdpProcess=Start-Process -FilePath "$env:SystemRoot\System32\mstsc.exe" -ArgumentList $rdpFile -WindowStyle Hidden -PassThru
+  $rdpProcess=Start-Process -FilePath "$env:SystemRoot\System32\mstsc.exe" -ArgumentList @('/v:127.0.0.2','/w:1280','/h:800') -WindowStyle Hidden -PassThru
   Add-Type -AssemblyName UIAutomationClient
   Add-Type -AssemblyName UIAutomationTypes
   $desktopSession=$null
@@ -85,9 +85,9 @@ public static class BgWindow {
     }
   } until ($null -ne $desktopSession -or (Get-Date) -gt $deadline)
   if ($null -eq $desktopSession) {
-    Get-Process mstsc -ErrorAction SilentlyContinue | Select-Object Id,MainWindowTitle | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-client.json')
+    Get-Process mstsc,CredentialUIBroker -ErrorAction SilentlyContinue | Select-Object Id,MainWindowTitle | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-client.json')
     Add-Type -AssemblyName UIAutomationClient
-    [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,(New-Object Windows.Automation.PropertyCondition([Windows.Automation.AutomationElement]::ProcessIdProperty,[int]$rdpProcess.Id))) | ForEach-Object { $_.Current.Name } | Select-Object -First 40 | Set-Content (Join-Path $out 'rdp-dialog.txt')
+    [Windows.Automation.AutomationElement]::RootElement.FindAll([Windows.Automation.TreeScope]::Descendants,[Windows.Automation.Condition]::TrueCondition) | ForEach-Object { $_.Current.Name } | Select-Object -First 140 | Set-Content (Join-Path $out 'rdp-dialog.txt')
     & query user 2>&1 | Out-File (Join-Path $out 'desktop-sessions.txt')
     foreach ($log in @('Microsoft-Windows-TerminalServices-LocalSessionManager/Operational','Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational','Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational')) {
       Get-WinEvent -FilterHashtable @{LogName=$log;StartTime=(Get-Date).AddMinutes(-3)} -MaxEvents 12 -ErrorAction SilentlyContinue | Select-Object Id,Message | ConvertTo-Json -Depth 4 | Out-File (Join-Path $out (($log -replace '[^a-zA-Z0-9]','-') + '.json'))
