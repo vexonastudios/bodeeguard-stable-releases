@@ -2,6 +2,11 @@ name: Real Windows installer acceptance
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        required: true
+        type: choice
+        default: stable
+        options: [stable, test]
       version:
         required: true
         type: string
@@ -24,6 +29,7 @@ jobs:
       - name: Run the exact parent installer on a disposable Windows VM
         shell: powershell
         env:
+          BG_CHANNEL: ${{ inputs.channel }}
           BG_VERSION: ${{ inputs.version }}
           BG_EXPECTED_SHA: ${{ inputs.sha256 }}
           BG_EXPECTED_SIZE: ${{ inputs.size }}
@@ -32,7 +38,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: windows-installer-${{ inputs.version }}-${{ github.run_id }}
+          name: windows-installer-${{ inputs.channel }}-${{ inputs.version }}-${{ github.run_id }}
           path: acceptance-output/
           if-no-files-found: error
           retention-days: 30
