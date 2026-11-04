@@ -32,7 +32,9 @@ try {
   # Keep external RDP blocked: only this VM's loopback client is used.
   Get-NetFirewallRule -DisplayGroup 'Remote Desktop' -ErrorAction SilentlyContinue | Disable-NetFirewallRule
   Set-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Terminal Server' fDenyTSConnections 0
+  New-NetFirewallRule -DisplayName 'BodeeGuard acceptance loopback only' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -LocalAddress 127.0.0.0/8 -RemoteAddress 127.0.0.0/8 | Out-Null
   Start-Service TermService
+  Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-listener.json')
   Add-Type -AssemblyName System.Windows.Forms
   Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @"
 using System;
@@ -76,7 +78,20 @@ public static class BgWindow {
       if ($owner.User -eq $testUser) { $desktopSession=[int]$explorer.SessionId; break }
     }
   } until ($null -ne $desktopSession -or (Get-Date) -gt $deadline)
-  if ($null -eq $desktopSession) { throw 'Could not establish standard-user desktop in disposable VM' }
+  if ($null -eq $desktopSession) {
+    @{connected=$client.Connected;extendedDisconnectReason=$client.ExtendedDisconnectReason} | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-client.json')
+    & query user 2>&1 | Out-File (Join-Path $out 'desktop-sessions.txt')
+    foreach ($log in @('Microsoft-Windows-TerminalServices-LocalSessionManager/Operational','Microsoft-Windows-TerminalServices-RemoteConnectionManager/Operational','Microsoft-Windows-RemoteDesktopServices-RdpCoreTS/Operational')) {
+      Get-WinEvent -FilterHashtable @{LogName=$log;StartTime=(Get-Date).AddMinutes(-3)} -MaxEvents 12 -ErrorAction SilentlyContinue | Select-Object Id,Message | ConvertTo-Json -Depth 4 | Out-File (Join-Path $out (($log -replace '[^a-zA-Z0-9]','-') + '.json'))
+    }
+    & secedit /export /cfg (Join-Path $env:RUNNER_TEMP 'rights.inf') /areas USER_RIGHTS | Out-Null
+    Select-String -Path (Join-Path $env:RUNNER_TEMP 'rights.inf') -Pattern 'RemoteInteractiveLogonRight' | ForEach-Object Line | Set-Content (Join-Path $out 'remote-logon-rights.txt')
+    Add-Type -AssemblyName System.Drawing
+    $bitmap=New-Object Drawing.Bitmap($form.Width,$form.Height)
+    $form.DrawToBitmap($bitmap,(New-Object Drawing.Rectangle(0,0,$form.Width,$form.Height)))
+    $bitmap.Save((Join-Path $out 'desktop-preparation.png'));$bitmap.Dispose()
+    throw 'Could not establish standard-user desktop in disposable VM'
+  }
   & "$env:SystemRoot\System32\tscon.exe" $desktopSession /dest:console "/password:$testPassword"
   if ($LASTEXITCODE -ne 0) { throw 'Could not transfer disposable desktop to console' }
   $form.Close()
