@@ -144,6 +144,7 @@ public static class BgWindow {
       }
       $window=[BgWindow]::SetupWindow($proc.Id)
       if ($window -ne [IntPtr]::Zero) {
+        if ($frame -eq 0) { Start-Sleep -Seconds 2 }
         $frame++
         $captureFile="$stage-$('{0:d4}' -f $frame).png"
         [BgWindow]::Capture($window,(Join-Path $captureRoot $captureFile))
