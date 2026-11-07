@@ -35,8 +35,9 @@ try {
   New-NetFirewallRule -DisplayName 'BodeeGuard acceptance loopback only' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 3389 -LocalAddress 127.0.0.0/8 -RemoteAddress 127.0.0.0/8 | Out-Null
   Start-Service TermService
   Get-NetTCPConnection -LocalPort 3389 -State Listen | Select-Object LocalAddress,LocalPort | ConvertTo-Json | Set-Content (Join-Path $out 'rdp-listener.json')
+  Add-Type -AssemblyName System.Drawing
   Add-Type -AssemblyName System.Windows.Forms
-  Add-Type -ReferencedAssemblies System.Windows.Forms -TypeDefinition @"
+  Add-Type -ReferencedAssemblies System.Windows.Forms,System.Drawing -TypeDefinition @"
 using System;
 using System.Windows.Forms;
 using System.Runtime.InteropServices;
@@ -52,6 +53,16 @@ public static class BgWindow {
  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
  [DllImport("user32.dll",CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h,System.Text.StringBuilder s,int n);
  [DllImport("user32.dll")] public static extern bool PostMessage(IntPtr h,uint m,IntPtr w,IntPtr l);
+ [StructLayout(LayoutKind.Sequential)] public struct Rect { public int Left, Top, Right, Bottom; }
+ [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h,out Rect r);
+ [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h,IntPtr dc,uint flags);
+ public static void Capture(IntPtr h,string path) {
+  Rect r;if(!GetWindowRect(h,out r)||r.Right<=r.Left||r.Bottom<=r.Top)throw new Exception("Installer window bounds unavailable");
+  using(var b=new System.Drawing.Bitmap(r.Right-r.Left,r.Bottom-r.Top)) {
+   using(var g=System.Drawing.Graphics.FromImage(b)) {var dc=g.GetHdc();try {if(!PrintWindow(h,dc,2))throw new Exception("Actual installer window capture failed");}finally {g.ReleaseHdc(dc);}}
+   b.Save(path,System.Drawing.Imaging.ImageFormat.Png);
+  }
+ }
  public static string Text(IntPtr h) {var s=new System.Text.StringBuilder(512);GetWindowText(h,s,512);return s.ToString();}
  public static IntPtr SetupWindow(int pid) { IntPtr found=IntPtr.Zero; EnumWindows((h,l)=>{uint p;GetWindowThreadProcessId(h,out p);if(p==pid&&Text(h).Trim()=="BodeeGuard Setup")found=h;return true;},IntPtr.Zero);return found; }
 }
@@ -106,11 +117,17 @@ public static class BgWindow {
   Register-ScheduledTask -TaskName 'BodeeGuardAcceptanceOpenApp' -Action $launchAction -Principal $launchPrincipal -Force | Out-Null
   Write-Host 'Standard-user desktop ready; beginning actual setup wizard.'
 
+  $captureRoot=Join-Path $out 'tutorial-capture'
+  New-Item -ItemType Directory -Path $captureRoot -Force | Out-Null
+  $script:captureEvents=@()
   function Invoke-Installer([string]$stage) {
     # GUI installer; /S is reserved for authentic signed automatic-update tickets.
-    $proc=Start-Process -FilePath $file -PassThru -WindowStyle Hidden
+    # Owner requested visible real installer walkthrough; disposable VM only.
+    $proc=Start-Process -FilePath $file -PassThru -WindowStyle Normal
     $watch=[Diagnostics.Stopwatch]::StartNew()
     $clicked=@()
+    $frame=0
+    $lastClick=-10
     $opened=$false
     while (!$proc.HasExited -and $watch.Elapsed.TotalSeconds -lt 240) {
       # Open the real installed app as this standard user, as from Start.
@@ -127,10 +144,17 @@ public static class BgWindow {
       }
       $window=[BgWindow]::SetupWindow($proc.Id)
       if ($window -ne [IntPtr]::Zero) {
+        $frame++
+        $captureFile="$stage-$('{0:d4}' -f $frame).png"
+        [BgWindow]::Capture($window,(Join-Path $captureRoot $captureFile))
+        $script:captureEvents+=@{stage=$stage;file=$captureFile;seconds=$watch.Elapsed.TotalSeconds;source='PrintWindow of unmodified actual public installer';windowTitle=[BgWindow]::Text($window)}
+        $script:captureEvents | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $captureRoot 'frames.json') -Encoding UTF8
         $next=[BgWindow]::GetDlgItem($window,1)
         if ($next -ne [IntPtr]::Zero -and [BgWindow]::IsWindowEnabled($next)) {
           $text=[BgWindow]::Text($next)
-          if ($text -match '(?i)next|install|finish|close') {
+          if ($text -match '(?i)next|install|finish|close' -and ($watch.Elapsed.TotalSeconds-$lastClick) -gt 3) {
+            $lastClick=$watch.Elapsed.TotalSeconds
+            $script:captureEvents[-1].button=$text
             $clicked+=$text
             [BgWindow]::PostMessage($window,0x111,[IntPtr]1,$next) | Out-Null
           }
